@@ -9,3 +9,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     repeat_password: str
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    token_type: str
