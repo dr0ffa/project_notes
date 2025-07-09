@@ -14,22 +14,36 @@ auth_router = APIRouter()
 
 
 config = AuthXConfig()
+config.JWT_COOKIE_CSRF_PROTECT = False #по хорошему не должно быть так
 config.JWT_SECRET_KEY = "SECRET_KEY"
 config.JWT_ACCESS_COOKIE_NAME = "my_access_token"
 config.JWT_REFRESH_COOKIE_NAME = "my_refresh_token"
 config.JWT_TOKEN_LOCATION = ["cookies"]
 
 security: AuthX = AuthX(config=config)
+#лучше в мэйне
+
+
+async def check_access_token(request: Request):
+   try:
+      result = await security.access_token_required(request)
+      print(result)
+   except Exception as e:
+      print(e)
+      raise HTTPException(status_code=401, detail=str(e)) from e
+
 
 
 @auth_router.post("/auth/login")
-def login(creds: LoginRequest, response: Response, db: Session = Depends(get_db)):
+async def login(creds: LoginRequest, response: Response, db: Session = Depends(get_db)):
    user = db.query(Users).filter(Users.username == creds.username).first()
    if not user or not verify_password(creds.password, str(user.hashed_password)):
       raise HTTPException(status_code=401, detail="Incorrect username or password")
    
-   access_token = security.create_access_token(uid=str(user.id), expires_delta=timedelta(minutes=60))
-   refresh_token = security.create_refresh_token(uid=str(user.id), subject="refresh", expires_delta=timedelta(days=30))
+   access_token = security.create_access_token(uid=str(user.id), expiry=timedelta(minutes=60))
+   refresh_token = security.create_refresh_token(uid=str(user.id), subject="refresh", expiry=timedelta(days=30))
+   
+   print(access_token)
 
    response.set_cookie(config.JWT_ACCESS_COOKIE_NAME, access_token)
    response.set_cookie(config.JWT_REFRESH_COOKIE_NAME, refresh_token)
@@ -38,7 +52,7 @@ def login(creds: LoginRequest, response: Response, db: Session = Depends(get_db)
 
 
 @auth_router.post("/auth/register")
-def register(creds: RegisterRequest, db: Session = Depends(get_db)):
+async def register(creds: RegisterRequest, db: Session = Depends(get_db)):
    existing_user = db.query(Users).filter(Users.username == creds.username).first()
    if existing_user:
       raise HTTPException(status_code=400, detail="Username already registered")
@@ -53,21 +67,15 @@ def register(creds: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @auth_router.post("/auth/refresh", response_model=RefreshResponse)
-def refresh_token(request: Request, response: Response, db: Session = Depends(get_db)):
-   refresh_token = request.cookies.get("my_refresh_token")
-   if not refresh_token:
-      raise HTTPException(status_code=401, detail="Refresh token is missing")
+async def refresh_token(request: Request, response: Response, db: Session = Depends(get_db)):
    try:
-      token_obj = RequestToken(token=refresh_token, location="cookies")
-      payload = security.verify_token(token_obj)
-      user_id = payload.uid
-      print(type(payload))
-      user = db.query(Users).filter(Users.id == user_id).first()
+      refresh_token = await security.refresh_token_required(request)
+      user = db.query(Users).filter(Users.id == refresh_token.sub).first()
       if not user:
          raise HTTPException(status_code=404, detail="User not found")
       
-      new_access_token = security.create_access_token(uid=str(user.id), expires_delta=timedelta(minutes=60))
-      new_refresh_token = security.create_refresh_token(uid=str(user.id), subject="refresh", expires_delta=timedelta(days=30))
+      new_access_token = security.create_access_token(uid=str(user.id), expiry=timedelta(minutes=60))
+      new_refresh_token = security.create_refresh_token(uid=str(user.id), subject="refresh", expiry=timedelta(days=30))
 
       response.set_cookie(config.JWT_ACCESS_COOKIE_NAME, new_access_token)
       response.set_cookie(config.JWT_REFRESH_COOKIE_NAME, new_refresh_token)
@@ -80,6 +88,6 @@ def refresh_token(request: Request, response: Response, db: Session = Depends(ge
 
 
 
-@auth_router.get("/auth/test", dependencies=[Depends(security.access_token_required)])
+@auth_router.get("/auth/test", dependencies=[Depends(check_access_token)])
 def protected():
    return {"data": "TOP SECRET"}
